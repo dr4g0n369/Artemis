@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+    entrypoint: ""
     env_file: env.test
     command: python -m unittest discover test.e2e
     volumes:
@@ -67,6 +68,11 @@ services:
     image: mysql:5.6
     environment:
       MYSQL_ROOT_PASSWORD: root
+
+  test-service-with-exposed-apache-config:
+    image: php:7.4-apache
+    volumes:
+      - ./test/data/exposed_apache_config/:/var/www/html/
 
   test-service-with-bruteable-files:
     image: php:7.4-apache
@@ -206,6 +212,11 @@ services:
     image: php:7.4-apache
     volumes:
       - ./test/reporting/data/bruteable_files/htpasswd/:/var/www/html/
+
+  test-apache-with-lfi:
+    image: php:7.4-apache
+    volumes:
+      - ./test/data/lfi/:/var/www/html/
 
   test-apache-with-sql-injection-postgres:
     build:

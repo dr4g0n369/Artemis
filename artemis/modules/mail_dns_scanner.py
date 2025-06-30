@@ -14,6 +14,12 @@ from artemis import load_risk_class
 from artemis.binds import TaskStatus, TaskType
 from artemis.domains import is_main_domain
 from artemis.module_base import ArtemisBase
+from artemis.modules.base.runtime_configuration_registry import (
+    RuntimeConfigurationRegistry,
+)
+from artemis.modules.runtime_configuration.mail_dns_scanner_configuration import (
+    MailDNSScannerConfiguration,
+)
 from artemis.task_utils import has_ip_range
 
 PUBLIC_SUFFIX_LIST = PublicSuffixList()
@@ -33,14 +39,26 @@ class MailDNSScanner(ArtemisBase):
     identity = "mail_dns_scanner"
     filters = [{"type": TaskType.DOMAIN.value}]
 
+    def get_default_configuration(self) -> MailDNSScannerConfiguration:
+        return MailDNSScannerConfiguration()
+
     def scan(self, current_task: Task, domain: str) -> MailDNSScannerResult:
         result = MailDNSScannerResult()
 
         has_mx_records = False
 
-        # Try to find an SMTP for current domain
+        # Try to find an SMTP for current domain or for the private suffix domain - let's treat a domain
+        # as parked if we don't see a MX record on either of them, as some DMARC checks are performed
+        # on the private suffix domain.
         try:
             has_mx_records = len(dns.resolver.resolve(domain, "MX")) > 0
+        except dns.resolver.NoAnswer:
+            pass
+
+        try:
+            has_mx_records = (
+                has_mx_records or len(dns.resolver.resolve(PUBLIC_SUFFIX_LIST.privatesuffix(domain), "MX")) > 0
+            )
         except dns.resolver.NoAnswer:
             pass
 
@@ -71,6 +89,17 @@ class MailDNSScanner(ArtemisBase):
             and not has_mx_records
         ):
             result.spf_dmarc_scan_result.spf.valid = True
+
+        # Some sites have TXT records on all subdomains (e.g. wildcard records) - we don't want
+        # to report DMARC problems (e.g. unrelated TXT record found in the '_dmarc' subdomain) in that case,
+        # let's just check the private suffix domain.
+        if (
+            result.spf_dmarc_scan_result
+            and result.spf_dmarc_scan_result.dmarc
+            and result.spf_dmarc_scan_result.dmarc.location != domain
+            and domain != PUBLIC_SUFFIX_LIST.privatesuffix(domain)
+        ):
+            result.spf_dmarc_scan_result.dmarc.warnings = []
 
         # To decrease the number of false positives, for domains that do have MX records, we require SPF records to
         # be present only if the domain is directly below a public suffix (so we will require SPF on example.com
@@ -122,6 +151,12 @@ class MailDNSScanner(ArtemisBase):
         domain = current_task.get_payload(TaskType.DOMAIN)
         result = self.scan(current_task, domain)
 
+        if not self.configuration.report_warnings:  # type: ignore
+            if result.spf_dmarc_scan_result and result.spf_dmarc_scan_result.spf:
+                result.spf_dmarc_scan_result.spf.warnings = []
+            if result.spf_dmarc_scan_result and result.spf_dmarc_scan_result.dmarc:
+                result.spf_dmarc_scan_result.dmarc.warnings = []
+
         status_reasons: List[str] = []
         if result.spf_dmarc_scan_result and result.spf_dmarc_scan_result.spf:
             status_reasons.extend(result.spf_dmarc_scan_result.spf.errors)
@@ -140,6 +175,9 @@ class MailDNSScanner(ArtemisBase):
         self.db.save_task_result(
             task=current_task, status=status, status_reason=status_reason, data=dataclasses.asdict(result)
         )
+
+
+RuntimeConfigurationRegistry().register_configuration(MailDNSScanner.identity, MailDNSScannerConfiguration)
 
 
 if __name__ == "__main__":

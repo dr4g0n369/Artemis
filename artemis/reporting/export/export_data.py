@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from artemis.domains import is_domain
+from artemis.reporting.base.asset import Asset
 from artemis.reporting.base.language import Language
 from artemis.reporting.base.report import Report
 from artemis.reporting.base.report_type import ReportType
@@ -18,6 +19,7 @@ class SingleTopLevelTargetExportData:
     top_level_target: str
     contains_type: List[ReportType]
     reports: List[Report]
+    assets: List[Asset]
 
 
 @dataclass
@@ -50,6 +52,14 @@ def build_export_data(
             reports_per_top_level_target[report.top_level_target] = []
         reports_per_top_level_target[report.top_level_target].append(report)
 
+    assets_per_top_level_target: Dict[str, List[Asset]] = {}
+    for asset in db.assets:
+        assert asset.top_level_target
+
+        if asset.top_level_target not in assets_per_top_level_target:
+            assets_per_top_level_target[asset.top_level_target] = []
+        assets_per_top_level_target[asset.top_level_target].append(asset)
+
     alerts = []
     for reporter in get_all_reporters():
         alerts.extend(reporter.get_alerts(reports))
@@ -75,13 +85,14 @@ def build_export_data(
             else None
         )
 
-    for top_level_target in reports_per_top_level_target.keys():
+    for top_level_target in set(reports_per_top_level_target.keys()) | set(assets_per_top_level_target.keys()):
         contains_type = set()
-        for report in reports_per_top_level_target[top_level_target]:
+        for report in reports_per_top_level_target.get(top_level_target, []):
             contains_type.add(report.report_type)
 
         reports_per_top_level_target[top_level_target] = sorted(
-            reports_per_top_level_target[top_level_target], key=lambda report: (report.report_type, report.target)
+            reports_per_top_level_target.get(top_level_target, []),
+            key=lambda report: (report.report_type, report.target),
         )
 
         message_data[top_level_target] = SingleTopLevelTargetExportData(
@@ -89,7 +100,8 @@ def build_export_data(
             top_level_target_is_domain=is_domain(top_level_target),
             top_level_target=top_level_target,
             contains_type=sorted(contains_type),
-            reports=reports_per_top_level_target[top_level_target],
+            reports=reports_per_top_level_target.get(top_level_target, []),
+            assets=assets_per_top_level_target.get(top_level_target, []),
         )
 
     return ExportData(
